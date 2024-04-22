@@ -2,14 +2,16 @@
 #include <WiFiNINA.h>
 #include "arduino_secrets.h"
 
-const char* ssid = SECRET_SSID;     // network SSID (name)
-const char* password = SECRET_PASS; // network password
+// Network credentials
+const char* ssid = SECRET_SSID;
+const char* password = SECRET_PASS;
 
-int status = WL_IDLE_STATUS;
+// Initialize the WiFi server on port 80
+WiFiServer server(80);
 
 // Define pin constants
-const int pwmPin = 3; // Pin for PWM output
-const int analogPin = A0; // Analog pin for current measurement
+const int pwmPin = 3;  // Pin for PWM output
+const int analogPin = A0;  // Analog pin for current measurement
 
 // Define differential pulse voltammetry parameters
 const float startPotential = 0.0; // Starting potential in volts
@@ -23,76 +25,97 @@ const int interval = 500;         // Time interval between steps in milliseconds
 float currentPotential = startPotential;
 
 void setup() {
-  // Initialize serial and wait for the port to open:
   Serial.begin(9600);
   pinMode(pwmPin, OUTPUT);
+  
   while (!Serial) {
     ; // Wait for serial port to connect. Needed for native USB port only
   }
 
-  // Check for the presence of the WiFi module:
-  if (WiFi.status() == WL_NO_MODULE) {
-    Serial.println("Communication with WiFi module failed!");
-    // Don't continue further if the module is not present
-    while (true);
+  Serial.print("Attempting to connect to SSID: ");
+  Serial.println(ssid);
+  while (WiFi.begin(ssid, password) != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
   }
-
-  // Attempt to connect to the WiFi network:
-  while (status != WL_CONNECTED) {
-    Serial.print("Attempting to connect to WPA SSID: ");
-    Serial.println(ssid);
-    // Connect to WPA/WPA2 network:
-    status = WiFi.begin(ssid, password);
-    delay(10000); // Wait 10 seconds between retries
-  }
-
-  Serial.println("You're connected to the network");
-  printWiFiStatus();
+  Serial.println("\nWiFi connected.");
+  server.begin();
+  Serial.print("Server started, IP address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void loop() {
-  if (currentPotential <= endPotential) {
-    applyPotential(currentPotential); // Apply the base potential
-    delay(interval-pulseWidth); // Wait for the interval
-    applyPulse(currentPotential, pulseAmplitude); // Apply the pulse
-    delay(pulseWidth); // Wait for the interval
-    currentPotential += stepPotential; // Increment potential for the next step
+  WiFiClient client = server.available();
+  if (client) {
+    Serial.println("New Client.");
+    boolean currentLineIsBlank = true;
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read();
+        Serial.write(c);
+        
+        if (c == '\n' && currentLineIsBlank) {
+          // Send a standard HTTP response header
+          client.println("HTTP/1.1 200 OK");
+          client.println("Content-Type: text/html");
+          client.println("Connection: close");
+          client.println();
 
-  } else {
-    // Reset the potential for the next cycle
-    currentPotential = startPotential;
+          // Webpage content
+          client.println("<!DOCTYPE HTML>");
+          client.println("<html>");
+          client.println("<head><title>Arduino DPV Controller</title></head>");
+          client.println("<body>");
+          client.println("<h1>Differential Pulse Voltammetry Started</h1>");
+          client.println("<p>Generating pulses...</p>");
+          client.println("</body></html>");
+
+          generatePulses();
+          client.stop();
+          Serial.println("Client disconnected.");
+          break;
+        }
+        if (c == '\n') {
+          currentLineIsBlank = true;
+        } else if (c != '\r') {
+          currentLineIsBlank = false;
+        }
+      }
+    }
   }
-  
+}
+
+void generatePulses() {
+  while (currentPotential <= endPotential) {
+    applyPotential(currentPotential);
+    delay(interval - pulseWidth);
+    applyPulse(currentPotential, pulseAmplitude);
+    delay(pulseWidth);
+    currentPotential += stepPotential;
+
+    // Measure current at the peak of each pulse
+    //float current = measureCurrent();
+    //Serial.print("Potential: "); Serial.print(currentPotential); Serial.print("V, ");
+    //Serial.print("Current: "); Serial.println(current); Serial.println("A");
+  }
+  currentPotential = startPotential;  // Reset the potential for the next cycle
+  applyPotential(currentPotential);
 }
 
 void applyPotential(float potential) {
   int pwmValue = map(potential * 1000, 0, 1500, 0, 255);
-  analogWrite(pwmPin, pwmValue); // Set PWM output to the desired potential
-  //Serial.println("Potential:" + String(potential));
+  analogWrite(pwmPin, pwmValue);
 }
 
 void applyPulse(float potential, int amplitude) {
-  // Increase the potential by the amplitude for the pulse
   potential += amplitude / 1000.0;
-  int pwmValue = map(potential * 1000, 0, 1500, 0, 255);//millivolts
-  analogWrite(pwmPin, pwmValue); // Apply the pulse potential
-  //Serial.println("Pulse:" + String(potential));
-
+  int pwmValue = map(potential * 1000, 0, 1500, 0, 255);
+  analogWrite(pwmPin, pwmValue);
 }
 
-
-void printWiFiStatus() {
-  // Print the local IP address:
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-  
-  // Print the SSID of the network you're connected to:
-  Serial.print("Connected to ");
-  Serial.println(WiFi.SSID());
-
-  // Print the received signal strength:
-  long rssi = WiFi.RSSI();
-  Serial.print("Signal strength (RSSI):");
-  Serial.print(rssi);
-  Serial.println(" dBm");
-}
+// float measureCurrent() {
+//   int analogValue = analogRead(analogPin);
+//   float voltage = (analogValue * 3.3) / 1023.0;
+//   float current = voltage / feedbackResistor;
+//   return current;
+// }
